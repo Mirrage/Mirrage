@@ -4,6 +4,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     StaleElementReferenceException,
@@ -18,29 +19,25 @@ import concurrent.futures
 import threading
 
 
-# ================================================================
-# SAFE BROWSER CLEANUP
-# ================================================================
+# ============================================================
+# BROWSER CLEANUP
+# ============================================================
 
 def safe_quit(driver):
-    """Quit Chrome without allowing a frozen browser to block cleanup."""
-    def _quit():
+    def close():
         try:
             driver.quit()
         except Exception:
             pass
 
-    threading.Thread(target=_quit, daemon=True).start()
+    threading.Thread(target=close, daemon=True).start()
 
 
-# ================================================================
-# ROBUST CLICK
-# ================================================================
+# ============================================================
+# CLICK HELPER
+# ============================================================
 
 def robust_click(driver, element):
-    """
-    Try a normal Selenium click, then JavaScript, then ActionChains.
-    """
     try:
         element.click()
         return True
@@ -67,34 +64,20 @@ def robust_click(driver, element):
         return False
 
 
-# ================================================================
-# FIND ELEMENT IN PAGE OR IFRAMES
-# ================================================================
+# ============================================================
+# FIND ELEMENT IN PAGE / IFRAMES
+# ============================================================
 
-def find_in_page_or_frames(driver, xpaths, timeout=20):
-    """
-    Search the main document and first-level iframes.
-
-    Returns:
-        (element, frame_context)
-
-    frame_context is None when the element is in the main document.
-    When an element is found inside an iframe, Selenium remains inside
-    that iframe so the caller can interact with the returned element.
-    """
-
+def find_in_page_or_frames(driver, xpaths, timeout=15):
     end_time = time.time() + timeout
 
     while time.time() < end_time:
 
-        # --------------------------------------------------------
-        # MAIN DOCUMENT
-        # --------------------------------------------------------
         driver.switch_to.default_content()
 
-        for xp in xpaths:
+        for xpath in xpaths:
             try:
-                elements = driver.find_elements(By.XPATH, xp)
+                elements = driver.find_elements(By.XPATH, xpath)
 
                 for element in elements:
                     try:
@@ -102,13 +85,9 @@ def find_in_page_or_frames(driver, xpaths, timeout=20):
                             return element, None
                     except StaleElementReferenceException:
                         continue
-
             except Exception:
                 continue
 
-        # --------------------------------------------------------
-        # IFRAMES
-        # --------------------------------------------------------
         try:
             frames = driver.find_elements(By.TAG_NAME, "iframe")
 
@@ -117,9 +96,9 @@ def find_in_page_or_frames(driver, xpaths, timeout=20):
                     driver.switch_to.default_content()
                     driver.switch_to.frame(frame)
 
-                    for xp in xpaths:
+                    for xpath in xpaths:
                         try:
-                            elements = driver.find_elements(By.XPATH, xp)
+                            elements = driver.find_elements(By.XPATH, xpath)
 
                             for element in elements:
                                 try:
@@ -127,7 +106,6 @@ def find_in_page_or_frames(driver, xpaths, timeout=20):
                                         return element, frame
                                 except StaleElementReferenceException:
                                     continue
-
                         except Exception:
                             continue
 
@@ -144,96 +122,42 @@ def find_in_page_or_frames(driver, xpaths, timeout=20):
     return None, None
 
 
-# ================================================================
-# CLOSE OPTIONAL POPUP
-# ================================================================
+# ============================================================
+# DEBUG
+# ============================================================
 
-def dismiss_close_popup(driver, timeout=5):
-    """
-    Close common X/Close popup buttons if one is present.
-    This is optional and does not raise an error if nothing is found.
-    """
-
-    close_xpaths = [
-        "//*[@aria-label='Close']",
-        "//*[@aria-label='close']",
-        "//*[@aria-label='Dismiss']",
-        "//button[contains(@class,'close')]",
-        "//*[contains(@class,'modal-close')]",
-        "//*[contains(@class,'btn-close')]",
-        "//*[contains(@class,'close-btn')]",
-        "//*[contains(@class,'popup-close')]",
-        "//button[normalize-space(text())='×']",
-        "//button[normalize-space(text())='X']",
-        "//span[normalize-space(text())='×']",
-        "//*[@role='button'][normalize-space(text())='×']",
-    ]
-
-    close_btn, _ = find_in_page_or_frames(
-        driver,
-        close_xpaths,
-        timeout=timeout
-    )
-
-    if close_btn is None:
-        driver.switch_to.default_content()
-        return False
-
-    try:
-        robust_click(driver, close_btn)
-    except Exception:
-        pass
-
-    driver.switch_to.default_content()
-    time.sleep(1)
-    print("   ✅ Optional popup closed")
-    return True
-
-
-# ================================================================
-# DEBUG INFORMATION
-# ================================================================
-
-def save_debug(driver, debug_dir, prefix, num):
-    """Save screenshot and HTML so a failed page can be inspected."""
-
+def save_debug(driver, debug_dir, name, num):
     os.makedirs(debug_dir, exist_ok=True)
 
-    safe_num = str(num).replace("/", "_").replace("\\", "_")
-
-    screenshot_path = os.path.join(
+    screenshot = os.path.join(
         debug_dir,
-        f"{prefix}_{safe_num}.png"
+        f"{name}_{num}.png"
     )
 
-    html_path = os.path.join(
+    html = os.path.join(
         debug_dir,
-        f"{prefix}_{safe_num}.html"
+        f"{name}_{num}.html"
     )
 
     try:
         driver.switch_to.default_content()
-        driver.save_screenshot(screenshot_path)
+        driver.save_screenshot(screenshot)
 
-        with open(html_path, "w", encoding="utf-8") as file:
+        with open(html, "w", encoding="utf-8") as file:
             file.write(driver.page_source)
 
-        print(f"   📸 Screenshot saved: {screenshot_path}")
-        print(f"   📄 HTML saved: {html_path}")
+        print(f"   📸 Screenshot: {screenshot}")
+        print(f"   📄 HTML: {html}")
 
     except Exception as error:
         print(f"   ⚠️ Could not save debug files: {error}")
 
-    return screenshot_path, html_path
 
-
-# ================================================================
-# START CHROME
-# ================================================================
+# ============================================================
+# START DRIVER
+# ============================================================
 
 def start_driver():
-    """Create a fresh headless Chrome driver."""
-
     options = Options()
 
     options.add_argument("--headless=new")
@@ -243,30 +167,9 @@ def start_driver():
     options.add_argument("--disable-software-rasterizer")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-setuid-sandbox")
-
-    options.add_argument("--disable-background-networking")
-    options.add_argument("--disable-sync")
-    options.add_argument("--disable-translate")
-    options.add_argument("--disable-default-apps")
+    options.add_argument("--window-size=1280,900")
     options.add_argument("--mute-audio")
 
-    options.add_argument("--disable-features=TranslateUI,site-per-process")
-    options.add_argument("--renderer-process-limit=1")
-    options.add_argument("--disk-cache-size=0")
-    options.add_argument("--window-size=1280,900")
-
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option(
-        "excludeSwitches",
-        ["enable-automation"]
-    )
-    options.add_experimental_option(
-        "useAutomationExtension",
-        False
-    )
-
-    # Do not delete webdriver-manager's cache on every restart.
-    # This is more reliable on Railway.
     service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(
@@ -279,296 +182,132 @@ def start_driver():
     except Exception:
         pass
 
-    try:
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', "
-            "{get: () => undefined})"
-        )
-    except Exception:
-        pass
-
     driver.set_page_load_timeout(35)
     driver.set_script_timeout(30)
 
     return driver
 
 
-# ================================================================
-# INPUT SELECTORS
-# ================================================================
+# ============================================================
+# CLOUDFLARE DETECTION
+# ============================================================
+
+def is_cloudflare_page(driver):
+    try:
+        title = (driver.title or "").lower()
+        source = driver.page_source.lower()
+
+        indicators = [
+            "attention required! | cloudflare",
+            "attention required",
+            "cloudflare",
+            "cf-chl-",
+            "challenge-platform",
+            "verify you are human",
+        ]
+
+        return any(indicator in title or indicator in source
+                   for indicator in indicators)
+
+    except Exception:
+        return False
+
+
+# ============================================================
+# LOGIN SELECTORS
+# ============================================================
 
 MOBILE_XPATHS = [
-    # Phone/mobile input types
     "//input[@type='tel']",
-
-    # Names
-    "//input[contains(translate(@name,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-
-    "//input[contains(translate(@name,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-
-    "//input[contains(translate(@name,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-
-    # IDs
-    "//input[contains(translate(@id,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-
-    "//input[contains(translate(@id,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-
-    "//input[contains(translate(@id,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-
-    # Placeholders
-    "//input[contains(translate(@placeholder,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-
-    "//input[contains(translate(@placeholder,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-
-    "//input[contains(translate(@placeholder,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-
-    "//input[contains(translate(@placeholder,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'telephone')]",
-
-    # Autocomplete
+    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
+    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
+    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
+    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
+    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
+    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
+    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
+    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
+    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
     "//input[@autocomplete='tel']",
-    "//input[@autocomplete='tel-national']",
 ]
 
 PASSWORD_XPATHS = [
     "//input[@type='password']",
-
-    "//input[contains(translate(@name,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
-
-    "//input[contains(translate(@id,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
-
-    "//input[contains(translate(@placeholder,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
-
-    "//input[contains(translate(@autocomplete,"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
+    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
+    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
+    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
 ]
 
-LOGIN_BUTTON_XPATHS = [
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'login')]",
-
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in')]",
-
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    "//input[@type='submit']",
+LOGIN_XPATHS = [
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'login')]",
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in')]",
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
     "//button[@type='submit']",
-
-    "//*[@role='button'][contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'login')]",
-
-    "//*[@role='button'][contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    # Last-resort button fallback
-    "//button",
+    "//input[@type='submit']",
 ]
 
 DAILY_COIN_XPATHS = [
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-
-    "//*[@role='button'][contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-
-    "//a[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-
-    "//*[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coins')]",
-
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'dailycoin')]",
-
-    "//*[@role='button'][contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'dailycoin')]",
-
-    "//*[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'dailycoin')]",
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
+    "//*[@role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
+    "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
+    "//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coins')]",
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'dailycoin')]",
 ]
 
 SIGN_IN_XPATHS = [
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    "//*[@role='button'][contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    "//a[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    "//*[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-
-    "//button[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'signin')]",
-
-    "//*[contains(translate(normalize-space(.),"
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'signin')]",
+    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
+    "//*[@role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
+    "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
+    "//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
 ]
 
 
-# ================================================================
-# FIND FALLBACK INPUT
-# ================================================================
-
-def find_second_visible_input(driver, timeout=8):
-    """
-    Fallback for pages where the input has no useful type/name/id/placeholder.
-    Returns the second visible editable input.
-    """
-
-    end_time = time.time() + timeout
-
-    while time.time() < end_time:
-
-        driver.switch_to.default_content()
-
-        try:
-            inputs = driver.find_elements(By.TAG_NAME, "input")
-
-            visible_inputs = []
-
-            for element in inputs:
-                try:
-                    if not element.is_displayed() or not element.is_enabled():
-                        continue
-
-                    input_type = (
-                        element.get_attribute("type") or ""
-                    ).lower()
-
-                    if input_type in [
-                        "hidden",
-                        "submit",
-                        "button",
-                        "checkbox",
-                        "radio",
-                    ]:
-                        continue
-
-                    visible_inputs.append(element)
-
-                except StaleElementReferenceException:
-                    continue
-
-            if len(visible_inputs) >= 2:
-                return visible_inputs[1], None
-
-        except Exception:
-            pass
-
-        time.sleep(0.5)
-
-    return None, None
-
-
-# ================================================================
+# ============================================================
 # PROCESS ONE NUMBER
-# ================================================================
+# ============================================================
 
 def process_one_number(driver, wait, target_url, num, debug_dir):
-    """
-    Complete automation flow for one number:
-
-    1. Open target URL
-    2. Enter number in mobile field
-    3. Enter number in password field
-    4. Click Login
-    5. Close optional popup
-    6. Click Daily Coins
-    7. Click Sign In in the resulting popup
-    """
-
-    # ------------------------------------------------------------
-    # OPEN TARGET PAGE
-    # ------------------------------------------------------------
 
     print(f"   🌐 Opening: {target_url}")
 
     driver.get(target_url)
-
-    # Railway can take longer to load than a local PC.
-    time.sleep(7)
+    time.sleep(5)
 
     print(f"   🌐 Current URL: {driver.current_url}")
     print(f"   📄 Page title: {driver.title}")
 
-    # ------------------------------------------------------------
-    # MOBILE / NUMBER FIELD
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # IMPORTANT FIX:
+    # Stop immediately if Railway receives Cloudflare instead
+    # of the actual login page.
+    # --------------------------------------------------------
+
+    if is_cloudflare_page(driver):
+        save_debug(
+            driver,
+            debug_dir,
+            "cloudflare_blocked",
+            num
+        )
+
+        raise TimeoutException(
+            "Cloudflare page detected. "
+            "The actual login page was not loaded."
+        )
+
+    # --------------------------------------------------------
+    # MOBILE
+    # --------------------------------------------------------
 
     print("   🔎 Looking for mobile/number input...")
 
-    mobile, mobile_frame = find_in_page_or_frames(
+    mobile, _ = find_in_page_or_frames(
         driver,
         MOBILE_XPATHS,
-        timeout=25
+        timeout=15
     )
 
-    # If no named/type-based mobile input was found, try the
-    # first visible editable input.
     if mobile is None:
-
-        print("   ⚠️ Specific mobile selectors did not match.")
-        print("   🔎 Trying first visible editable input...")
-
-        driver.switch_to.default_content()
-
-        end_time = time.time() + 8
-
-        while time.time() < end_time:
-            try:
-                inputs = driver.find_elements(By.TAG_NAME, "input")
-
-                for element in inputs:
-                    try:
-                        if not element.is_displayed() or not element.is_enabled():
-                            continue
-
-                        input_type = (
-                            element.get_attribute("type") or ""
-                        ).lower()
-
-                        if input_type not in [
-                            "hidden",
-                            "submit",
-                            "button",
-                            "checkbox",
-                            "radio",
-                            "password",
-                        ]:
-                            mobile = element
-                            mobile_frame = None
-                            break
-
-                    except StaleElementReferenceException:
-                        continue
-
-                if mobile is not None:
-                    break
-
-            except Exception:
-                pass
-
-            time.sleep(0.5)
-
-    if mobile is None:
-
         save_debug(
             driver,
             debug_dir,
@@ -577,51 +316,27 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
         )
 
         raise TimeoutException(
-            "Could not find the mobile/number input. "
-            f"URL={driver.current_url} "
-            f"Title={driver.title}"
+            "Could not find mobile/number input."
         )
-
-    print("   ✅ Mobile/number input found")
-
-    # ------------------------------------------------------------
-    # ENTER NUMBER
-    # ------------------------------------------------------------
-
-    try:
-        mobile.click()
-    except Exception:
-        pass
 
     mobile.clear()
     mobile.send_keys(num)
 
     print(f"   📱 Number entered: {num}")
 
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
     # PASSWORD
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     print("   🔎 Looking for password input...")
 
-    password, password_frame = find_in_page_or_frames(
+    password, _ = find_in_page_or_frames(
         driver,
         PASSWORD_XPATHS,
-        timeout=20
+        timeout=15
     )
 
     if password is None:
-
-        print("   ⚠️ Password selector did not match.")
-        print("   🔎 Trying second visible input...")
-
-        password, password_frame = find_second_visible_input(
-            driver,
-            timeout=8
-        )
-
-    if password is None:
-
         save_debug(
             driver,
             debug_dir,
@@ -630,37 +345,27 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
         )
 
         raise TimeoutException(
-            "Could not find password input. "
-            f"URL={driver.current_url} "
-            f"Title={driver.title}"
+            "Could not find password input."
         )
-
-    print("   ✅ Password input found")
-
-    try:
-        password.click()
-    except Exception:
-        pass
 
     password.clear()
     password.send_keys(num)
 
     print("   🔑 Password entered")
 
-    # ------------------------------------------------------------
-    # LOGIN BUTTON
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # LOGIN
+    # --------------------------------------------------------
 
     print("   🔎 Looking for Login button...")
 
-    login_btn, login_frame = find_in_page_or_frames(
+    login_btn, _ = find_in_page_or_frames(
         driver,
-        LOGIN_BUTTON_XPATHS,
-        timeout=20
+        LOGIN_XPATHS,
+        timeout=15
     )
 
     if login_btn is None:
-
         save_debug(
             driver,
             debug_dir,
@@ -669,63 +374,33 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
         )
 
         raise TimeoutException(
-            "Could not find Login button. "
-            f"URL={driver.current_url} "
-            f"Title={driver.title}"
+            "Could not find Login button."
         )
-
-    print("   ✅ Login button found")
 
     if not robust_click(driver, login_btn):
-
-        save_debug(
-            driver,
-            debug_dir,
-            "login_click_failed",
-            num
-        )
-
         raise ElementClickInterceptedException(
-            "Login button could not be clicked"
+            "Could not click Login button."
         )
 
     driver.switch_to.default_content()
 
     print("   ✅ Login clicked")
 
-    # ------------------------------------------------------------
-    # WAIT FOR LOGIN / REDIRECT
-    # ------------------------------------------------------------
+    time.sleep(7)
 
-    time.sleep(8)
-
-    print(f"   🌐 After login URL: {driver.current_url}")
-
-    # ------------------------------------------------------------
-    # OPTIONAL POPUP
-    # ------------------------------------------------------------
-
-    print("   🔎 Checking for optional popup...")
-
-    dismiss_close_popup(
-        driver,
-        timeout=5
-    )
-
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
     # DAILY COINS
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     print("   🔎 Looking for 'Daily coins' button...")
 
-    daily_btn, daily_frame = find_in_page_or_frames(
+    daily_btn, _ = find_in_page_or_frames(
         driver,
         DAILY_COIN_XPATHS,
-        timeout=25
+        timeout=15
     )
 
     if daily_btn is None:
-
         save_debug(
             driver,
             debug_dir,
@@ -734,47 +409,33 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
         )
 
         raise TimeoutException(
-            "Could not locate 'Daily coins' button. "
-            f"URL={driver.current_url} "
-            f"Title={driver.title}"
+            "Could not find Daily Coins button."
         )
-
-    print("   ✅ Daily coins button found")
 
     if not robust_click(driver, daily_btn):
-
-        save_debug(
-            driver,
-            debug_dir,
-            "daily_coin_click_failed",
-            num
-        )
-
         raise ElementClickInterceptedException(
-            "Daily coins button could not be clicked"
+            "Could not click Daily Coins button."
         )
 
     driver.switch_to.default_content()
 
     print("   ✅ Clicked 'Daily coins'!")
 
-    # Give popup time to render.
-    time.sleep(5)
+    time.sleep(4)
 
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
     # SIGN IN
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     print("   🔎 Looking for 'Sign In' button...")
 
-    sign_btn, sign_frame = find_in_page_or_frames(
+    sign_btn, _ = find_in_page_or_frames(
         driver,
         SIGN_IN_XPATHS,
-        timeout=20
+        timeout=15
     )
 
     if sign_btn is None:
-
         save_debug(
             driver,
             debug_dir,
@@ -783,24 +444,12 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
         )
 
         raise TimeoutException(
-            "Could not locate 'Sign In' button. "
-            f"URL={driver.current_url} "
-            f"Title={driver.title}"
+            "Could not find Sign In button."
         )
-
-    print("   ✅ Sign In button found")
 
     if not robust_click(driver, sign_btn):
-
-        save_debug(
-            driver,
-            debug_dir,
-            "sign_in_click_failed",
-            num
-        )
-
         raise ElementClickInterceptedException(
-            "Sign In button could not be clicked"
+            "Could not click Sign In button."
         )
 
     driver.switch_to.default_content()
@@ -808,37 +457,33 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
     print("   ✅ Clicked Sign In!")
 
 
-# ================================================================
-# MAIN AUTOMATION LOOP
-# ================================================================
+# ============================================================
+# MAIN AUTOMATION
+# ============================================================
 
 def run_automation(target_url, numbers_file, stop_event=None):
 
     driver = None
-
     debug_dir = "debug_output"
+
     os.makedirs(debug_dir, exist_ok=True)
 
-    # Restart Chrome periodically to control memory usage.
+    # Restart browser every 10 numbers.
     RESTART_EVERY = 10
 
-    # Increased from 60 seconds because Railway can be slower.
+    # Maximum time allowed for one number.
     PER_NUMBER_HARD_TIMEOUT = 90
 
     try:
 
-        # --------------------------------------------------------
-        # START BROWSER
-        # --------------------------------------------------------
-
         driver = start_driver()
-        wait = WebDriverWait(driver, 25)
+        wait = WebDriverWait(driver, 20)
 
         print(f"✅ Started on: {target_url}")
 
-        # --------------------------------------------------------
+        # ----------------------------------------------------
         # READ NUMBERS
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
         with open(
             numbers_file,
@@ -854,16 +499,16 @@ def run_automation(target_url, numbers_file, stop_event=None):
 
         print(f"📋 Loaded {len(numbers)} numbers")
 
-        # --------------------------------------------------------
-        # PROCESS EACH NUMBER
-        # --------------------------------------------------------
+        # ----------------------------------------------------
+        # PROCESS NUMBERS
+        # ----------------------------------------------------
 
         for i, num in enumerate(numbers, 1):
 
             if stop_event is not None and stop_event.is_set():
 
                 print(
-                    f"\n🛑 Stop requested. "
+                    f"🛑 Stop requested. "
                     f"Halting after {i - 1}/{len(numbers)} numbers."
                 )
 
@@ -873,9 +518,9 @@ def run_automation(target_url, numbers_file, stop_event=None):
                 f"\n[{i}/{len(numbers)}] Processing: {num}"
             )
 
-            # ----------------------------------------------------
-            # PERIODIC BROWSER RESTART
-            # ----------------------------------------------------
+            # ------------------------------------------------
+            # RESTART BROWSER PERIODICALLY
+            # ------------------------------------------------
 
             if i > 1 and (i - 1) % RESTART_EVERY == 0:
 
@@ -885,28 +530,25 @@ def run_automation(target_url, numbers_file, stop_event=None):
                 )
 
                 safe_quit(driver)
-
                 time.sleep(2)
 
                 try:
-
                     driver = start_driver()
-                    wait = WebDriverWait(driver, 25)
+                    wait = WebDriverWait(driver, 20)
 
                     print("   ✅ Browser restarted")
 
-                except Exception as restart_error:
+                except Exception as error:
 
                     print(
-                        f"   ❌ Failed to restart browser: "
-                        f"{restart_error}"
+                        f"   ❌ Browser restart failed: {error}"
                     )
 
                     continue
 
-            # ----------------------------------------------------
-            # RUN NUMBER IN WORKER THREAD
-            # ----------------------------------------------------
+            # ------------------------------------------------
+            # RUN NUMBER WITH HARD TIMEOUT
+            # ------------------------------------------------
 
             executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1
@@ -933,10 +575,6 @@ def run_automation(target_url, numbers_file, stop_event=None):
 
                 executor.shutdown(wait=False)
 
-            # ----------------------------------------------------
-            # HARD TIMEOUT
-            # ----------------------------------------------------
-
             except concurrent.futures.TimeoutError:
 
                 print(
@@ -944,36 +582,23 @@ def run_automation(target_url, numbers_file, stop_event=None):
                     f"{PER_NUMBER_HARD_TIMEOUT}s."
                 )
 
-                print(
-                    "   🔄 Browser may be frozen. "
-                    "Starting a new browser..."
-                )
-
                 executor.shutdown(wait=False)
-
                 safe_quit(driver)
 
                 time.sleep(2)
 
                 try:
-
                     driver = start_driver()
-                    wait = WebDriverWait(driver, 25)
+                    wait = WebDriverWait(driver, 20)
+
+                    print("   ✅ New browser started")
+
+                except Exception as error:
 
                     print(
-                        "   ✅ New browser started"
+                        f"   ❌ Could not start new browser: "
+                        f"{error}"
                     )
-
-                except Exception as restart_error:
-
-                    print(
-                        f"   ❌ Failed to start new browser: "
-                        f"{restart_error}"
-                    )
-
-            # ----------------------------------------------------
-            # NORMAL ERROR
-            # ----------------------------------------------------
 
             except Exception as error:
 
@@ -986,14 +611,6 @@ def run_automation(target_url, numbers_file, stop_event=None):
 
                 try:
                     driver.switch_to.default_content()
-
-                    save_debug(
-                        driver,
-                        debug_dir,
-                        "error",
-                        num
-                    )
-
                 except Exception:
                     pass
 
