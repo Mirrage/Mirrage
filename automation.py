@@ -5,22 +5,18 @@ from playwright.sync_api import (
 
 import time
 import os
-import concurrent.futures
-import threading
 
 
 # ============================================================
 # BROWSER CLEANUP
 # ============================================================
 
-def safe_quit(browser):
-    def close():
-        try:
+def safe_close(browser):
+    try:
+        if browser:
             browser.close()
-        except Exception:
-            pass
-
-    threading.Thread(target=close, daemon=True).start()
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -53,8 +49,8 @@ def save_debug(page, debug_dir, name, num):
         ) as file:
             file.write(page.content())
 
-        print(f"   📸 Screenshot: {screenshot}")
-        print(f"   📄 HTML: {html}")
+        print(f"   📸 Screenshot saved: {screenshot}")
+        print(f"   📄 HTML saved: {html}")
 
     except Exception as error:
         print(
@@ -89,7 +85,7 @@ def is_cloudflare_page(page):
 
 
 # ============================================================
-# LOGIN SELECTORS
+# SELECTORS
 # ============================================================
 
 MOBILE_SELECTORS = [
@@ -130,9 +126,10 @@ LOGIN_SELECTORS = [
 
 DAILY_COIN_SELECTORS = [
     "button:has-text('Daily coins')",
-    "[role='button']:has-text('Daily coins')",
-    "a:has-text('Daily coins')",
     "button:has-text('Daily coin')",
+    "[role='button']:has-text('Daily coins')",
+    "[role='button']:has-text('Daily coin')",
+    "a:has-text('Daily coins')",
     "a:has-text('Daily coin')",
 ]
 
@@ -149,6 +146,7 @@ SIGN_IN_SELECTORS = [
 # ============================================================
 
 def find_element(page, selectors, timeout=15):
+
     end_time = time.time() + timeout
 
     while time.time() < end_time:
@@ -156,9 +154,15 @@ def find_element(page, selectors, timeout=15):
         for selector in selectors:
 
             try:
-                locator = page.locator(selector).first
 
-                if locator.is_visible() and locator.is_enabled():
+                locator = page.locator(
+                    selector
+                ).first
+
+                if (
+                    locator.is_visible()
+                    and locator.is_enabled()
+                ):
                     return locator
 
             except Exception:
@@ -183,9 +187,15 @@ def robust_click(page, element):
         pass
 
     try:
+
         element.scroll_into_view_if_needed()
+
         time.sleep(0.3)
-        element.click(force=True)
+
+        element.click(
+            force=True
+        )
+
         return True
 
     except Exception:
@@ -193,14 +203,50 @@ def robust_click(page, element):
 
 
 # ============================================================
+# START BROWSER
+# ============================================================
+
+def start_browser(playwright):
+
+    browser = playwright.chromium.launch(
+        headless=True
+    )
+
+    context = browser.new_context(
+        viewport={
+            "width": 1280,
+            "height": 900
+        }
+    )
+
+    page = context.new_page()
+
+    page.set_default_timeout(15000)
+
+    return browser, context, page
+
+
+# ============================================================
 # PROCESS ONE NUMBER
 # ============================================================
 
-def process_one_number(page, target_url, num, debug_dir):
+def process_one_number(
+    page,
+    target_url,
+    num,
+    debug_dir
+):
 
-    print(f"   🌐 Opening: {target_url}")
+    print(
+        f"   🌐 Opening: {target_url}"
+    )
+
+    # --------------------------------------------------------
+    # OPEN PAGE
+    # --------------------------------------------------------
 
     try:
+
         page.goto(
             target_url,
             wait_until="domcontentloaded",
@@ -208,15 +254,29 @@ def process_one_number(page, target_url, num, debug_dir):
         )
 
     except PlaywrightTimeoutError:
-        print("   ⚠️ Page load timed out; checking current page...")
+
+        print(
+            "   ⚠️ Page load timed out. "
+            "Checking current page..."
+        )
 
     time.sleep(5)
 
-    print(f"   🌐 Current URL: {page.url}")
-    print(f"   📄 Page title: {page.title()}")
+    print(
+        f"   🌐 Current URL: {page.url}"
+    )
+
+    try:
+        print(
+            f"   📄 Page title: {page.title()}"
+        )
+    except Exception:
+        print(
+            "   📄 Could not read page title"
+        )
 
     # --------------------------------------------------------
-    # CLOUDFLARE
+    # CLOUDFLARE CHECK
     # --------------------------------------------------------
 
     if is_cloudflare_page(page):
@@ -326,7 +386,10 @@ def process_one_number(page, target_url, num, debug_dir):
             "Could not find Login button."
         )
 
-    if not robust_click(page, login_btn):
+    if not robust_click(
+        page,
+        login_btn
+    ):
 
         raise Exception(
             "Could not click Login button."
@@ -365,7 +428,10 @@ def process_one_number(page, target_url, num, debug_dir):
             "Could not find Daily Coins button."
         )
 
-    if not robust_click(page, daily_btn):
+    if not robust_click(
+        page,
+        daily_btn
+    ):
 
         raise Exception(
             "Could not click Daily Coins button."
@@ -404,38 +470,18 @@ def process_one_number(page, target_url, num, debug_dir):
             "Could not find Sign In button."
         )
 
-    if not robust_click(page, sign_btn):
+    if not robust_click(
+        page,
+        sign_btn
+    ):
 
         raise Exception(
             "Could not click Sign In button."
         )
 
     print(
-        "   ✅ Clicked Sign In!")
-
-
-# ============================================================
-# START PLAYWRIGHT
-# ============================================================
-
-def start_browser(playwright):
-    browser = playwright.chromium.launch(
-        headless=True
+        "   ✅ Clicked Sign In!"
     )
-
-
-    context = browser.new_context(
-        viewport={
-            "width": 1280,
-            "height": 900
-        }
-    )
-
-    page = context.new_page()
-
-    page.set_default_timeout(15000)
-
-    return browser, context, page
 
 
 # ============================================================
@@ -448,10 +494,6 @@ def run_automation(
     stop_event=None
 ):
 
-    browser = None
-    context = None
-    page = None
-
     debug_dir = "debug_output"
 
     os.makedirs(
@@ -461,14 +503,25 @@ def run_automation(
 
     RESTART_EVERY = 10
 
-    PER_NUMBER_HARD_TIMEOUT = 90
+    browser = None
+    context = None
+    page = None
+
+    successful = 0
+    failed = 0
+
+    failed_numbers = []
+
+    # --------------------------------------------------------
+    # START PLAYWRIGHT
+    # --------------------------------------------------------
 
     try:
 
         with sync_playwright() as playwright:
 
-            browser, context, page = start_browser(
-                playwright
+            browser, context, page = (
+                start_browser(playwright)
             )
 
             print(
@@ -476,7 +529,7 @@ def run_automation(
             )
 
             # ------------------------------------------------
-            # READ NUMBERS
+            # LOAD NUMBERS
             # ------------------------------------------------
 
             with open(
@@ -495,6 +548,17 @@ def run_automation(
                 f"📋 Loaded {len(numbers)} numbers"
             )
 
+            if not numbers:
+
+                print(
+                    "⚠️ No numbers found in file."
+                )
+
+                return (
+                    "Automation finished: "
+                    "no numbers were provided."
+                )
+
             # ------------------------------------------------
             # PROCESS NUMBERS
             # ------------------------------------------------
@@ -503,6 +567,10 @@ def run_automation(
                 numbers,
                 1
             ):
+
+                # --------------------------------------------
+                # STOP CHECK
+                # --------------------------------------------
 
                 if (
                     stop_event is not None
@@ -523,7 +591,7 @@ def run_automation(
                 )
 
                 # --------------------------------------------
-                # RESTART BROWSER
+                # RESTART BROWSER EVERY 10 NUMBERS
                 # --------------------------------------------
 
                 if (
@@ -536,17 +604,20 @@ def run_automation(
                         f"after {i - 1} numbers..."
                     )
 
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
+                    safe_close(browser)
+
+                    browser = None
+                    context = None
+                    page = None
 
                     time.sleep(2)
 
                     try:
 
                         browser, context, page = (
-                            start_browser(playwright)
+                            start_browser(
+                                playwright
+                            )
                         )
 
                         print(
@@ -560,78 +631,102 @@ def run_automation(
                             f"failed: {error}"
                         )
 
+                        failed += 1
+                        failed_numbers.append(
+                            num
+                        )
+
                         continue
 
                 # --------------------------------------------
-                # PROCESS
+                # PROCESS NUMBER
+                #
+                # IMPORTANT:
+                # NO ThreadPoolExecutor here.
+                # Playwright stays on the same thread.
                 # --------------------------------------------
-
-                executor = (
-                    concurrent.futures.ThreadPoolExecutor(
-                        max_workers=1
-                    )
-                )
-
-                future = executor.submit(
-                    process_one_number,
-                    page,
-                    target_url,
-                    num,
-                    debug_dir
-                )
 
                 try:
 
-                    future.result(
-                        timeout=PER_NUMBER_HARD_TIMEOUT
+                    process_one_number(
+                        page,
+                        target_url,
+                        num,
+                        debug_dir
                     )
+
+                    successful += 1
 
                     print(
                         f"   ✅ {num} "
                         f"completed successfully."
                     )
 
-                    executor.shutdown(
-                        wait=False
-                    )
+                except PlaywrightTimeoutError as error:
 
-                except concurrent.futures.TimeoutError:
+                    failed += 1
+
+                    failed_numbers.append(
+                        num
+                    )
 
                     print(
-                        f"   ⏱️ {num} timed out "
-                        f"after "
-                        f"{PER_NUMBER_HARD_TIMEOUT}s."
+                        f"   ❌ Error for {num}: "
+                        f"Timeout: {error}"
                     )
 
-                    executor.shutdown(
-                        wait=False
-                    )
-
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
-
-                    time.sleep(2)
+                    # ----------------------------------------
+                    # If the browser is on Cloudflare or
+                    # otherwise unusable, restart it before
+                    # processing the next number.
+                    # ----------------------------------------
 
                     try:
 
-                        browser, context, page = (
-                            start_browser(playwright)
-                        )
+                        if is_cloudflare_page(
+                            page
+                        ):
+
+                            print(
+                                "   🔄 Browser is on "
+                                "Cloudflare page."
+                            )
+
+                            safe_close(
+                                browser
+                            )
+
+                            browser = None
+                            context = None
+                            page = None
+
+                            time.sleep(2)
+
+                            browser, context, page = (
+                                start_browser(
+                                    playwright
+                                )
+                            )
+
+                            print(
+                                "   ✅ Fresh browser "
+                                "started"
+                            )
+
+                    except Exception as restart_error:
 
                         print(
-                            "   ✅ New browser started"
-                        )
-
-                    except Exception as error:
-
-                        print(
-                            f"   ❌ Could not start "
-                            f"new browser: {error}"
+                            f"   ⚠️ Could not restart "
+                            f"browser: {restart_error}"
                         )
 
                 except Exception as error:
+
+                    failed += 1
+
+                    failed_numbers.append(
+                        num
+                    )
 
                     print(
                         f"   ❌ Error for {num}: "
@@ -639,17 +734,78 @@ def run_automation(
                         f"{error}"
                     )
 
-                    executor.shutdown(
-                        wait=False
+            # ------------------------------------------------
+            # FINAL SUMMARY
+            # ------------------------------------------------
+
+            print(
+                "\n=================================================="
+            )
+
+            print(
+                "📊 AUTOMATION SUMMARY"
+            )
+
+            print(
+                "=================================================="
+            )
+
+            print(
+                f"📋 Total numbers: {len(numbers)}"
+            )
+
+            print(
+                f"✅ Successful: {successful}"
+            )
+
+            print(
+                f"❌ Failed: {failed}"
+            )
+
+            if failed_numbers:
+
+                print(
+                    "❌ Failed numbers:"
+                )
+
+                for failed_num in failed_numbers:
+
+                    print(
+                        f"   - {failed_num}"
                     )
 
             print(
-                "\n✅ All done!"
+                "=================================================="
             )
 
-            return (
-                "Automation completed successfully!"
+            if failed == 0:
+
+                result = (
+                    f"Automation completed successfully. "
+                    f"{successful}/{len(numbers)} "
+                    f"numbers processed."
+                )
+
+            elif successful > 0:
+
+                result = (
+                    f"Automation completed with errors. "
+                    f"{successful}/{len(numbers)} succeeded, "
+                    f"{failed} failed."
+                )
+
+            else:
+
+                result = (
+                    f"Automation failed. "
+                    f"0/{len(numbers)} succeeded."
+                )
+
+            print(
+                result
             )
+
+            return result
 
     except Exception as error:
 
@@ -658,13 +814,13 @@ def run_automation(
             f"{type(error).__name__}: {error}"
         )
 
-        return f"Critical Error: {error}"
+        return (
+            f"Critical Error: "
+            f"{type(error).__name__}: {error}"
+        )
 
     finally:
 
-        if browser:
-
-            try:
-                browser.close()
-            except Exception:
-                pass
+        safe_close(
+            browser
+        )
