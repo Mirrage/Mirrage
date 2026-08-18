@@ -1,17 +1,7 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    ElementClickInterceptedException,
-    StaleElementReferenceException,
-    TimeoutException,
-    NoSuchElementException,
+from playwright.sync_api import (
+    sync_playwright,
+    TimeoutError as PlaywrightTimeoutError,
 )
-from webdriver_manager.chrome import ChromeDriverManager
 
 import time
 import os
@@ -23,10 +13,10 @@ import threading
 # BROWSER CLEANUP
 # ============================================================
 
-def safe_quit(driver):
+def safe_quit(browser):
     def close():
         try:
-            driver.quit()
+            browser.close()
         except Exception:
             pass
 
@@ -34,99 +24,10 @@ def safe_quit(driver):
 
 
 # ============================================================
-# CLICK HELPER
-# ============================================================
-
-def robust_click(driver, element):
-    try:
-        element.click()
-        return True
-    except StaleElementReferenceException:
-        raise
-    except Exception:
-        pass
-
-    try:
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});",
-            element
-        )
-        time.sleep(0.3)
-        driver.execute_script("arguments[0].click();", element)
-        return True
-    except Exception:
-        pass
-
-    try:
-        ActionChains(driver).move_to_element(element).pause(0.2).click().perform()
-        return True
-    except Exception:
-        return False
-
-
-# ============================================================
-# FIND ELEMENT IN PAGE / IFRAMES
-# ============================================================
-
-def find_in_page_or_frames(driver, xpaths, timeout=15):
-    end_time = time.time() + timeout
-
-    while time.time() < end_time:
-
-        driver.switch_to.default_content()
-
-        for xpath in xpaths:
-            try:
-                elements = driver.find_elements(By.XPATH, xpath)
-
-                for element in elements:
-                    try:
-                        if element.is_displayed() and element.is_enabled():
-                            return element, None
-                    except StaleElementReferenceException:
-                        continue
-            except Exception:
-                continue
-
-        try:
-            frames = driver.find_elements(By.TAG_NAME, "iframe")
-
-            for frame in frames:
-                try:
-                    driver.switch_to.default_content()
-                    driver.switch_to.frame(frame)
-
-                    for xpath in xpaths:
-                        try:
-                            elements = driver.find_elements(By.XPATH, xpath)
-
-                            for element in elements:
-                                try:
-                                    if element.is_displayed() and element.is_enabled():
-                                        return element, frame
-                                except StaleElementReferenceException:
-                                    continue
-                        except Exception:
-                            continue
-
-                except Exception:
-                    continue
-
-        except Exception:
-            pass
-
-        driver.switch_to.default_content()
-        time.sleep(0.5)
-
-    driver.switch_to.default_content()
-    return None, None
-
-
-# ============================================================
 # DEBUG
 # ============================================================
 
-def save_debug(driver, debug_dir, name, num):
+def save_debug(page, debug_dir, name, num):
     os.makedirs(debug_dir, exist_ok=True)
 
     screenshot = os.path.join(
@@ -140,65 +41,37 @@ def save_debug(driver, debug_dir, name, num):
     )
 
     try:
-        driver.switch_to.default_content()
-        driver.save_screenshot(screenshot)
+        page.screenshot(
+            path=screenshot,
+            full_page=True
+        )
 
-        with open(html, "w", encoding="utf-8") as file:
-            file.write(driver.page_source)
+        with open(
+            html,
+            "w",
+            encoding="utf-8"
+        ) as file:
+            file.write(page.content())
 
         print(f"   📸 Screenshot: {screenshot}")
         print(f"   📄 HTML: {html}")
 
     except Exception as error:
-        print(f"   ⚠️ Could not save debug files: {error}")
-
-
-# ============================================================
-# START DRIVER
-# ============================================================
-
-def start_driver():
-    options = Options()
-
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-software-rasterizer")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-setuid-sandbox")
-    options.add_argument("--window-size=1280,900")
-    options.add_argument("--mute-audio")
-
-    service = Service(ChromeDriverManager().install())
-
-    driver = webdriver.Chrome(
-        service=service,
-        options=options
-    )
-
-    try:
-        driver.command_executor.set_timeout(30)
-    except Exception:
-        pass
-
-    driver.set_page_load_timeout(35)
-    driver.set_script_timeout(30)
-
-    return driver
+        print(
+            f"   ⚠️ Could not save debug files: {error}"
+        )
 
 
 # ============================================================
 # CLOUDFLARE DETECTION
 # ============================================================
 
-def is_cloudflare_page(driver):
+def is_cloudflare_page(page):
     try:
-        title = (driver.title or "").lower()
-        source = driver.page_source.lower()
+        title = (page.title() or "").lower()
+        source = page.content().lower()
 
         indicators = [
-            "attention required! | cloudflare",
             "attention required",
             "cloudflare",
             "cf-chl-",
@@ -206,8 +79,10 @@ def is_cloudflare_page(driver):
             "verify you are human",
         ]
 
-        return any(indicator in title or indicator in source
-                   for indicator in indicators)
+        return any(
+            indicator in title or indicator in source
+            for indicator in indicators
+        )
 
     except Exception:
         return False
@@ -217,80 +92,143 @@ def is_cloudflare_page(driver):
 # LOGIN SELECTORS
 # ============================================================
 
-MOBILE_XPATHS = [
-    "//input[@type='tel']",
-    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mobile')]",
-    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'phone')]",
-    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'number')]",
-    "//input[@autocomplete='tel']",
+MOBILE_SELECTORS = [
+    "input[type='tel']",
+
+    "input[name*='mobile' i]",
+    "input[name*='phone' i]",
+    "input[name*='number' i]",
+
+    "input[id*='mobile' i]",
+    "input[id*='phone' i]",
+    "input[id*='number' i]",
+
+    "input[placeholder*='mobile' i]",
+    "input[placeholder*='phone' i]",
+    "input[placeholder*='number' i]",
+
+    "input[autocomplete='tel']",
 ]
 
-PASSWORD_XPATHS = [
-    "//input[@type='password']",
-    "//input[contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
-    "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
-    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'password')]",
+
+PASSWORD_SELECTORS = [
+    "input[type='password']",
+    "input[name*='password' i]",
+    "input[id*='password' i]",
+    "input[placeholder*='password' i]",
 ]
 
-LOGIN_XPATHS = [
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'login')]",
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in')]",
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-    "//button[@type='submit']",
-    "//input[@type='submit']",
+
+LOGIN_SELECTORS = [
+    "button:has-text('Login')",
+    "button:has-text('Log in')",
+    "button:has-text('Sign in')",
+    "button[type='submit']",
+    "input[type='submit']",
 ]
 
-DAILY_COIN_XPATHS = [
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-    "//*[@role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-    "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coin')]",
-    "//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'daily coins')]",
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'dailycoin')]",
+
+DAILY_COIN_SELECTORS = [
+    "button:has-text('Daily coins')",
+    "[role='button']:has-text('Daily coins')",
+    "a:has-text('Daily coins')",
+    "button:has-text('Daily coin')",
+    "a:has-text('Daily coin')",
 ]
 
-SIGN_IN_XPATHS = [
-    "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-    "//*[@role='button'][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-    "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
-    "//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in')]",
+
+SIGN_IN_SELECTORS = [
+    "button:has-text('Sign in')",
+    "[role='button']:has-text('Sign in')",
+    "a:has-text('Sign in')",
 ]
+
+
+# ============================================================
+# FIND ELEMENT
+# ============================================================
+
+def find_element(page, selectors, timeout=15):
+    end_time = time.time() + timeout
+
+    while time.time() < end_time:
+
+        for selector in selectors:
+
+            try:
+                locator = page.locator(selector).first
+
+                if locator.is_visible() and locator.is_enabled():
+                    return locator
+
+            except Exception:
+                continue
+
+        time.sleep(0.5)
+
+    return None
+
+
+# ============================================================
+# CLICK HELPER
+# ============================================================
+
+def robust_click(page, element):
+
+    try:
+        element.click()
+        return True
+
+    except Exception:
+        pass
+
+    try:
+        element.scroll_into_view_if_needed()
+        time.sleep(0.3)
+        element.click(force=True)
+        return True
+
+    except Exception:
+        return False
 
 
 # ============================================================
 # PROCESS ONE NUMBER
 # ============================================================
 
-def process_one_number(driver, wait, target_url, num, debug_dir):
+def process_one_number(page, target_url, num, debug_dir):
 
     print(f"   🌐 Opening: {target_url}")
 
-    driver.get(target_url)
+    try:
+        page.goto(
+            target_url,
+            wait_until="domcontentloaded",
+            timeout=35000
+        )
+
+    except PlaywrightTimeoutError:
+        print("   ⚠️ Page load timed out; checking current page...")
+
     time.sleep(5)
 
-    print(f"   🌐 Current URL: {driver.current_url}")
-    print(f"   📄 Page title: {driver.title}")
+    print(f"   🌐 Current URL: {page.url}")
+    print(f"   📄 Page title: {page.title()}")
 
     # --------------------------------------------------------
-    # IMPORTANT FIX:
-    # Stop immediately if Railway receives Cloudflare instead
-    # of the actual login page.
+    # CLOUDFLARE
     # --------------------------------------------------------
 
-    if is_cloudflare_page(driver):
+    if is_cloudflare_page(page):
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "cloudflare_blocked",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Cloudflare page detected. "
             "The actual login page was not loaded."
         )
@@ -299,92 +237,104 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
     # MOBILE
     # --------------------------------------------------------
 
-    print("   🔎 Looking for mobile/number input...")
+    print(
+        "   🔎 Looking for mobile/number input..."
+    )
 
-    mobile, _ = find_in_page_or_frames(
-        driver,
-        MOBILE_XPATHS,
+    mobile = find_element(
+        page,
+        MOBILE_SELECTORS,
         timeout=15
     )
 
     if mobile is None:
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "mobile_input_not_found",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Could not find mobile/number input."
         )
 
-    mobile.clear()
-    mobile.send_keys(num)
+    mobile.fill(num)
 
-    print(f"   📱 Number entered: {num}")
+    print(
+        f"   📱 Number entered: {num}"
+    )
 
     # --------------------------------------------------------
     # PASSWORD
     # --------------------------------------------------------
 
-    print("   🔎 Looking for password input...")
+    print(
+        "   🔎 Looking for password input..."
+    )
 
-    password, _ = find_in_page_or_frames(
-        driver,
-        PASSWORD_XPATHS,
+    password = find_element(
+        page,
+        PASSWORD_SELECTORS,
         timeout=15
     )
 
     if password is None:
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "password_input_not_found",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Could not find password input."
         )
 
-    password.clear()
-    password.send_keys(num)
+    password.fill(num)
 
-    print("   🔑 Password entered")
+    print(
+        "   🔑 Password entered"
+    )
 
     # --------------------------------------------------------
     # LOGIN
     # --------------------------------------------------------
 
-    print("   🔎 Looking for Login button...")
+    print(
+        "   🔎 Looking for Login button..."
+    )
 
-    login_btn, _ = find_in_page_or_frames(
-        driver,
-        LOGIN_XPATHS,
+    login_btn = find_element(
+        page,
+        LOGIN_SELECTORS,
         timeout=15
     )
 
     if login_btn is None:
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "login_button_not_found",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Could not find Login button."
         )
 
-    if not robust_click(driver, login_btn):
-        raise ElementClickInterceptedException(
+    if not robust_click(page, login_btn):
+
+        raise Exception(
             "Could not click Login button."
         )
 
-    driver.switch_to.default_content()
-
-    print("   ✅ Login clicked")
+    print(
+        "   ✅ Login clicked"
+    )
 
     time.sleep(7)
 
@@ -392,34 +342,38 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
     # DAILY COINS
     # --------------------------------------------------------
 
-    print("   🔎 Looking for 'Daily coins' button...")
+    print(
+        "   🔎 Looking for 'Daily coins' button..."
+    )
 
-    daily_btn, _ = find_in_page_or_frames(
-        driver,
-        DAILY_COIN_XPATHS,
+    daily_btn = find_element(
+        page,
+        DAILY_COIN_SELECTORS,
         timeout=15
     )
 
     if daily_btn is None:
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "daily_coin_not_found",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Could not find Daily Coins button."
         )
 
-    if not robust_click(driver, daily_btn):
-        raise ElementClickInterceptedException(
+    if not robust_click(page, daily_btn):
+
+        raise Exception(
             "Could not click Daily Coins button."
         )
 
-    driver.switch_to.default_content()
-
-    print("   ✅ Clicked 'Daily coins'!")
+    print(
+        "   ✅ Clicked 'Daily coins'!"
+    )
 
     time.sleep(4)
 
@@ -427,196 +381,275 @@ def process_one_number(driver, wait, target_url, num, debug_dir):
     # SIGN IN
     # --------------------------------------------------------
 
-    print("   🔎 Looking for 'Sign In' button...")
+    print(
+        "   🔎 Looking for 'Sign In' button..."
+    )
 
-    sign_btn, _ = find_in_page_or_frames(
-        driver,
-        SIGN_IN_XPATHS,
+    sign_btn = find_element(
+        page,
+        SIGN_IN_SELECTORS,
         timeout=15
     )
 
     if sign_btn is None:
+
         save_debug(
-            driver,
+            page,
             debug_dir,
             "sign_in_not_found",
             num
         )
 
-        raise TimeoutException(
+        raise PlaywrightTimeoutError(
             "Could not find Sign In button."
         )
 
-    if not robust_click(driver, sign_btn):
-        raise ElementClickInterceptedException(
+    if not robust_click(page, sign_btn):
+
+        raise Exception(
             "Could not click Sign In button."
         )
 
-    driver.switch_to.default_content()
+    print(
+        "   ✅ Clicked Sign In!")
 
-    print("   ✅ Clicked Sign In!")
+
+# ============================================================
+# START PLAYWRIGHT
+# ============================================================
+
+def start_browser(playwright):
+
+    browser = playwright.chromium.launch(
+        headless=True
+    )
+
+    context = browser.new_context(
+        viewport={
+            "width": 1280,
+            "height": 900
+        }
+    )
+
+    page = context.new_page()
+
+    page.set_default_timeout(15000)
+
+    return browser, context, page
 
 
 # ============================================================
 # MAIN AUTOMATION
 # ============================================================
 
-def run_automation(target_url, numbers_file, stop_event=None):
+def run_automation(
+    target_url,
+    numbers_file,
+    stop_event=None
+):
 
-    driver = None
+    browser = None
+    context = None
+    page = None
+
     debug_dir = "debug_output"
 
-    os.makedirs(debug_dir, exist_ok=True)
+    os.makedirs(
+        debug_dir,
+        exist_ok=True
+    )
 
-    # Restart browser every 10 numbers.
     RESTART_EVERY = 10
 
-    # Maximum time allowed for one number.
     PER_NUMBER_HARD_TIMEOUT = 90
 
     try:
 
-        driver = start_driver()
-        wait = WebDriverWait(driver, 20)
+        with sync_playwright() as playwright:
 
-        print(f"✅ Started on: {target_url}")
-
-        # ----------------------------------------------------
-        # READ NUMBERS
-        # ----------------------------------------------------
-
-        with open(
-            numbers_file,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            numbers = [
-                line.strip()
-                for line in file
-                if line.strip()
-            ]
-
-        print(f"📋 Loaded {len(numbers)} numbers")
-
-        # ----------------------------------------------------
-        # PROCESS NUMBERS
-        # ----------------------------------------------------
-
-        for i, num in enumerate(numbers, 1):
-
-            if stop_event is not None and stop_event.is_set():
-
-                print(
-                    f"🛑 Stop requested. "
-                    f"Halting after {i - 1}/{len(numbers)} numbers."
-                )
-
-                break
+            browser, context, page = start_browser(
+                playwright
+            )
 
             print(
-                f"\n[{i}/{len(numbers)}] Processing: {num}"
+                f"✅ Started on: {target_url}"
             )
 
             # ------------------------------------------------
-            # RESTART BROWSER PERIODICALLY
+            # READ NUMBERS
             # ------------------------------------------------
 
-            if i > 1 and (i - 1) % RESTART_EVERY == 0:
+            with open(
+                numbers_file,
+                "r",
+                encoding="utf-8"
+            ) as file:
 
-                print(
-                    f"   🔄 Restarting browser after "
-                    f"{i - 1} numbers..."
-                )
+                numbers = [
+                    line.strip()
+                    for line in file
+                    if line.strip()
+                ]
 
-                safe_quit(driver)
-                time.sleep(2)
+            print(
+                f"📋 Loaded {len(numbers)} numbers"
+            )
 
-                try:
-                    driver = start_driver()
-                    wait = WebDriverWait(driver, 20)
+            # ------------------------------------------------
+            # PROCESS NUMBERS
+            # ------------------------------------------------
 
-                    print("   ✅ Browser restarted")
+            for i, num in enumerate(
+                numbers,
+                1
+            ):
 
-                except Exception as error:
+                if (
+                    stop_event is not None
+                    and stop_event.is_set()
+                ):
 
                     print(
-                        f"   ❌ Browser restart failed: {error}"
+                        f"🛑 Stop requested. "
+                        f"Halting after "
+                        f"{i - 1}/{len(numbers)} numbers."
                     )
 
-                    continue
-
-            # ------------------------------------------------
-            # RUN NUMBER WITH HARD TIMEOUT
-            # ------------------------------------------------
-
-            executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1
-            )
-
-            future = executor.submit(
-                process_one_number,
-                driver,
-                wait,
-                target_url,
-                num,
-                debug_dir
-            )
-
-            try:
-
-                future.result(
-                    timeout=PER_NUMBER_HARD_TIMEOUT
-                )
+                    break
 
                 print(
-                    f"   ✅ {num} completed successfully."
+                    f"\n[{i}/{len(numbers)}] "
+                    f"Processing: {num}"
                 )
 
-                executor.shutdown(wait=False)
+                # --------------------------------------------
+                # RESTART BROWSER
+                # --------------------------------------------
 
-            except concurrent.futures.TimeoutError:
+                if (
+                    i > 1
+                    and (i - 1) % RESTART_EVERY == 0
+                ):
 
-                print(
-                    f"   ⏱️ {num} timed out after "
-                    f"{PER_NUMBER_HARD_TIMEOUT}s."
+                    print(
+                        f"   🔄 Restarting browser "
+                        f"after {i - 1} numbers..."
+                    )
+
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
+                    time.sleep(2)
+
+                    try:
+
+                        browser, context, page = (
+                            start_browser(playwright)
+                        )
+
+                        print(
+                            "   ✅ Browser restarted"
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            f"   ❌ Browser restart "
+                            f"failed: {error}"
+                        )
+
+                        continue
+
+                # --------------------------------------------
+                # PROCESS
+                # --------------------------------------------
+
+                executor = (
+                    concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1
+                    )
                 )
 
-                executor.shutdown(wait=False)
-                safe_quit(driver)
-
-                time.sleep(2)
+                future = executor.submit(
+                    process_one_number,
+                    page,
+                    target_url,
+                    num,
+                    debug_dir
+                )
 
                 try:
-                    driver = start_driver()
-                    wait = WebDriverWait(driver, 20)
 
-                    print("   ✅ New browser started")
+                    future.result(
+                        timeout=PER_NUMBER_HARD_TIMEOUT
+                    )
+
+                    print(
+                        f"   ✅ {num} "
+                        f"completed successfully."
+                    )
+
+                    executor.shutdown(
+                        wait=False
+                    )
+
+                except concurrent.futures.TimeoutError:
+
+                    print(
+                        f"   ⏱️ {num} timed out "
+                        f"after "
+                        f"{PER_NUMBER_HARD_TIMEOUT}s."
+                    )
+
+                    executor.shutdown(
+                        wait=False
+                    )
+
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
+                    time.sleep(2)
+
+                    try:
+
+                        browser, context, page = (
+                            start_browser(playwright)
+                        )
+
+                        print(
+                            "   ✅ New browser started"
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            f"   ❌ Could not start "
+                            f"new browser: {error}"
+                        )
 
                 except Exception as error:
 
                     print(
-                        f"   ❌ Could not start new browser: "
+                        f"   ❌ Error for {num}: "
+                        f"{type(error).__name__}: "
                         f"{error}"
                     )
 
-            except Exception as error:
+                    executor.shutdown(
+                        wait=False
+                    )
 
-                print(
-                    f"   ❌ Error for {num}: "
-                    f"{type(error).__name__}: {error}"
-                )
+            print(
+                "\n✅ All done!"
+            )
 
-                executor.shutdown(wait=False)
-
-                try:
-                    driver.switch_to.default_content()
-                except Exception:
-                    pass
-
-        print("\n✅ All done!")
-
-        return "Automation completed successfully!"
+            return (
+                "Automation completed successfully!"
+            )
 
     except Exception as error:
 
@@ -629,5 +662,9 @@ def run_automation(target_url, numbers_file, stop_event=None):
 
     finally:
 
-        if driver:
-            safe_quit(driver)
+        if browser:
+
+            try:
+                browser.close()
+            except Exception:
+                pass
