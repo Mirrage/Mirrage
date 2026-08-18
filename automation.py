@@ -419,10 +419,10 @@ def process_one_number(page, target_url, num, debug_dir):
 # ============================================================
 
 def start_browser(playwright):
-
     browser = playwright.chromium.launch(
         headless=True
     )
+    
 
     context = browser.new_context(
         viewport={

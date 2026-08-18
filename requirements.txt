@@ -1,5 +1,3 @@
 Flask
-selenium
-webdriver-manager
+playwright
 gunicorn
-requests
