@@ -422,7 +422,7 @@ def start_browser(playwright):
     browser = playwright.chromium.launch(
         headless=True
     )
-    
+
 
     context = browser.new_context(
         viewport={
